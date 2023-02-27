@@ -5,9 +5,11 @@ import (
 	"log"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
+	"golang.org/x/exp/slices"
 )
 
 var messages = make([]int, 0)
+var topology = map[string]any{}
 
 func main() {
 	n := maelstrom.NewNode()
@@ -17,8 +19,24 @@ func main() {
 			return err
 		}
 		body["type"] = "broadcast_ok"
-		messages = append(messages, int(body["message"].(float64)))
+		// Prevent repeated messages
+		message := int(body["message"].(float64))
+		if slices.Contains(messages, message) {
+			return nil
+		} else {
+			messages = append(messages, message)
+		}
 		delete(body, "message")
+
+		// Gossip
+		neighbors := topology[n.ID()].([]any)
+		for _, neighbor := range neighbors {
+			for _, message := range messages {
+				gossipBody := map[string]any{"type": "broadcast", "message": message}
+				// Provide custom handler for "broadcast_ok" messages
+				n.RPC(neighbor.(string), gossipBody, func(gossipMsg maelstrom.Message) error { return nil })
+			}
+		}
 		return n.Reply(msg, body)
 	})
 	n.Handle("read", func(msg maelstrom.Message) error {
@@ -36,6 +54,7 @@ func main() {
 			return err
 		}
 		body["type"] = "topology_ok"
+		topology = body["topology"].(map[string]any)
 		delete(body, "topology")
 		return n.Reply(msg, body)
 	})
