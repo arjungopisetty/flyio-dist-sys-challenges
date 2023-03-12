@@ -3,39 +3,45 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"sync"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"golang.org/x/exp/slices"
 )
 
-var messages = make([]int, 0)
-var topology = make(map[string]any)
+var lock sync.RWMutex
+var messages = make([]float64, 0)
+var neighbors = make([]string, 0)
 
 func main() {
 	n := maelstrom.NewNode()
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
-		var body map[string]any
+		lock.Lock()
+		defer lock.Unlock()
+
+		var body struct {
+			Message float64 `json:"message"`
+		}
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
-		body["type"] = "broadcast_ok"
 		// Prevent repeated messages
-		message := int(body["message"].(float64))
-		if slices.Contains(messages, message) {
+		if slices.Contains(messages, body.Message) {
 			return nil
 		} else {
-			messages = append(messages, message)
+			messages = append(messages, body.Message)
 		}
-		delete(body, "message")
 
-		// Gossip
-		neighbors := topology[n.ID()].([]any)
+		// Gossip until all neighbors have recieved the message
 		for _, neighbor := range neighbors {
-			gossipBody := map[string]any{"type": "broadcast", "message": message}
-			// Provide custom handler for "broadcast_ok" messages
-			n.RPC(neighbor.(string), gossipBody, func(gossipMsg maelstrom.Message) error { return nil })
+			// Skip the node that sent this message
+			if neighbor == msg.Src {
+				continue
+			}
+			go asyncRPC(n, neighbor, body.Message)
 		}
-		return n.Reply(msg, body)
+		return n.Reply(msg, map[string]any{"type": "broadcast_ok"})
 	})
 	n.Handle("read", func(msg maelstrom.Message) error {
 		var body map[string]any
@@ -47,16 +53,40 @@ func main() {
 		return n.Reply(msg, body)
 	})
 	n.Handle("topology", func(msg maelstrom.Message) error {
+		var body struct {
+			Topology map[string][]string `json:"topology"`
+		}
+		if err := json.Unmarshal(msg.Body, &body); err != nil {
+			return err
+		}
+		neighbors = body.Topology[n.ID()]
+		return n.Reply(msg, map[string]any{"type": "topology_ok"})
+	})
+	if err := n.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func asyncRPC(n *maelstrom.Node, dest string, message float64) {
+	sendTimeout := 50 * time.Millisecond
+	hasDestRecieved := false
+	body := map[string]any{"type": "broadcast", "message": message}
+	// Provide custom handler for "broadcast_ok" messages
+	err := n.RPC(dest, body, func(msg maelstrom.Message) error {
 		var body map[string]any
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
-		body["type"] = "topology_ok"
-		topology = body["topology"].(map[string]any)
-		delete(body, "topology")
-		return n.Reply(msg, body)
+		// Stop broadcasting to neighbors that respond successfully
+		if body["type"] == "broadcast_ok" {
+			hasDestRecieved = true
+		}
+		return nil
 	})
-	if err := n.Run(); err != nil {
-		log.Fatal(err)
+	// Messages may time out or drop due to network partitions. Retry so
+	// messages are propogated when nodes are able to communicate again.
+	time.Sleep(sendTimeout)
+	if err != nil || !hasDestRecieved {
+		asyncRPC(n, dest, message)
 	}
 }
