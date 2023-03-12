@@ -9,7 +9,6 @@ import (
 )
 
 var messages = make([]int, 0)
-var broadcasedMessages = make([]int, 0)
 var topology = make(map[string]any)
 
 func main() {
@@ -31,14 +30,10 @@ func main() {
 
 		// Gossip
 		neighbors := topology[n.ID()].([]any)
-		newMessages := compareSlices(messages, broadcasedMessages)
 		for _, neighbor := range neighbors {
-			for _, message := range newMessages {
-				gossipBody := map[string]any{"type": "broadcast", "message": message}
-				// Provide custom handler for "broadcast_ok" messages
-				n.RPC(neighbor.(string), gossipBody, func(gossipMsg maelstrom.Message) error { return nil })
-				broadcasedMessages = append(broadcasedMessages, message)
-			}
+			gossipBody := map[string]any{"type": "broadcast", "message": message}
+			// Provide custom handler for "broadcast_ok" messages
+			n.RPC(neighbor.(string), gossipBody, func(gossipMsg maelstrom.Message) error { return nil })
 		}
 		return n.Reply(msg, body)
 	})
@@ -64,23 +59,4 @@ func main() {
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
 	}
-}
-
-// Returns the difference from two slices
-func compareSlices(a []int, b []int) []int {
-	diffSlice := make([]int, 0)
-	trackingMap := make(map[int]int)
-	for _, i := range a {
-		trackingMap[i] = 1
-	}
-	for _, i := range b {
-		trackingMap[i] = trackingMap[i] + 1
-	}
-	for key, val := range trackingMap {
-		if val == 1 {
-			diffSlice = append(diffSlice, key)
-		}
-	}
-
-	return diffSlice
 }
