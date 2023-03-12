@@ -19,6 +19,8 @@ func main() {
 		lock.Lock()
 		defer lock.Unlock()
 
+		responseBody := map[string]any{"type": "broadcast_ok"}
+
 		var body struct {
 			Message float64 `json:"message"`
 		}
@@ -27,7 +29,7 @@ func main() {
 		}
 		// Prevent repeated messages
 		if messages[body.Message] {
-			return nil
+			return n.Reply(msg, responseBody)
 		} else {
 			messages[body.Message] = true
 		}
@@ -40,7 +42,7 @@ func main() {
 			}
 			go asyncRPC(n, neighbor, body.Message)
 		}
-		return n.Reply(msg, map[string]any{"type": "broadcast_ok"})
+		return n.Reply(msg, responseBody)
 	})
 	n.Handle("read", func(msg maelstrom.Message) error {
 		lock.RLock()
@@ -71,7 +73,7 @@ func main() {
 }
 
 func asyncRPC(n *maelstrom.Node, dest string, message float64) {
-	sendTimeout := 50 * time.Millisecond
+	sendTimeout := time.Second
 	hasDestRecieved := false
 	payload := map[string]any{"type": "broadcast", "message": message}
 	// Provide custom handler for "broadcast_ok" messages
