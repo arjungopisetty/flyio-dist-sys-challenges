@@ -7,11 +7,10 @@ import (
 	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
-	"golang.org/x/exp/slices"
 )
 
 var lock sync.RWMutex
-var messages = make([]float64, 0)
+var messages = make(map[float64]bool)
 var neighbors = make([]string, 0)
 
 func main() {
@@ -27,10 +26,10 @@ func main() {
 			return err
 		}
 		// Prevent repeated messages
-		if slices.Contains(messages, body.Message) {
+		if messages[body.Message] {
 			return nil
 		} else {
-			messages = append(messages, body.Message)
+			messages[body.Message] = true
 		}
 
 		// Gossip until all neighbors have recieved the message
@@ -44,15 +43,19 @@ func main() {
 		return n.Reply(msg, map[string]any{"type": "broadcast_ok"})
 	})
 	n.Handle("read", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
-			return err
+		lock.RLock()
+		defer lock.RUnlock()
+
+		msgs := make([]float64, 0)
+		for key := range messages {
+			msgs = append(msgs, key)
 		}
-		body["type"] = "read_ok"
-		body["messages"] = messages
-		return n.Reply(msg, body)
+		return n.Reply(msg, map[string]any{"type": "read_ok", "messages": msgs})
 	})
 	n.Handle("topology", func(msg maelstrom.Message) error {
+		lock.Lock()
+		defer lock.Unlock()
+
 		var body struct {
 			Topology map[string][]string `json:"topology"`
 		}
@@ -70,9 +73,9 @@ func main() {
 func asyncRPC(n *maelstrom.Node, dest string, message float64) {
 	sendTimeout := 50 * time.Millisecond
 	hasDestRecieved := false
-	body := map[string]any{"type": "broadcast", "message": message}
+	payload := map[string]any{"type": "broadcast", "message": message}
 	// Provide custom handler for "broadcast_ok" messages
-	err := n.RPC(dest, body, func(msg maelstrom.Message) error {
+	err := n.RPC(dest, payload, func(msg maelstrom.Message) error {
 		var body map[string]any
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
