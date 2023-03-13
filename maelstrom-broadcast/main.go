@@ -78,12 +78,14 @@ func asyncRPC(n *maelstrom.Node, dest string, message float64) {
 	payload := map[string]any{"type": "broadcast", "message": message}
 	// Provide custom handler for "broadcast_ok" messages
 	err := n.RPC(dest, payload, func(msg maelstrom.Message) error {
-		var body map[string]any
+		var body struct {
+			Type string `json:"type"`
+		}
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
 		// Stop broadcasting to neighbors that respond successfully
-		if body["type"] == "broadcast_ok" {
+		if body.Type == "broadcast_ok" {
 			hasDestRecieved = true
 		}
 		return nil
